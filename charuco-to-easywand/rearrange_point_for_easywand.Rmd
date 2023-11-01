@@ -1,0 +1,159 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup}
+library("tidyverse")
+library("plotly")
+library("imager")
+library("here")
+```
+
+(latest version on Github at https://github.com/tytell/tytell-lab.git)
+This file from commit $Id$, $Format:%ci$ ($Format:%h$)
+
+First step: Run `detect_charuco.ipynb` to detect the points in the videos of
+the CHaRuCO boards.
+
+Fill in the name of the output CSV file from `detect_charuco.ipynb`.
+```{r}
+detections <- read_csv('/Volumes/Data/Field video/Raw data/White shoes/synced/boards.csv') |> 
+  select(-`...1`)
+```
+
+Fill in the directory that has the video files and the names of each video.
+```{r}
+videodir <- '/Volumes/Data/Field video/Raw data/White shoes/synced'
+camfiles <- c('GX010018.mp4',
+                   'GX010036.mp4')
+camfiles <- map(camfiles, ~ file.path(videodir, .x))
+```
+
+NB: The code below uses `imager`, which won't load frames properly if there 
+are any spaces in the path name anywhere
+
+Make sure you set the video frame rate correctly.
+```{r}
+fps <- 59.940060
+```
+
+This will show the 2D locations of each point for one camera.
+
+```{r}
+cam <- 1
+
+detections |> 
+  filter(camera == cam-1) |> 
+  ggplot(aes(x = x, y = y, color = frame)) +
+  geom_point()
+```
+This shows the range of x and y coordinates in the two cameras, just to check.
+```{r}
+detections |> 
+  group_by(camera) |> 
+  summarize(fr_hi = max(frame, na.rm = TRUE),
+            across(c(x, y), 
+                   list(lo = ~min(.x, na.rm = TRUE), hi = ~max(.x, na.rm = TRUE))))
+            
+```
+
+This *should* load in a frame from one of the videos, but it doesn't always work, and I'm
+not sure why.
+```{r}
+fr <- 300
+cam <- 1
+
+vidtime <- (fr-1) / fps
+
+I1 <- imager::load.video(camfiles[[cam]], 
+                         skip.to = vidtime,
+                         frames = 1)
+I1 <- as.data.frame(I1)
+```
+
+If the above block worked, then you should be able to plot the points and image
+together here and check to make sure they look OK.
+```{r}
+detections |> 
+  filter(frame == fr-1 & camera == cam-1) |> 
+  ggplot(aes(x = x, y = y)) +
+  geom_raster(data = I1, aes(x = x, y = y, fill = value)) +
+  geom_point(aes(color = factor(id)))
+```
+# Set up points for EasyWand
+
+To rearrange the points for EasyWand, we generate a fake "wand", which is any
+pair of points that are separated by the same distance. This takes all of the pairs
+that are separated by 1 grid square, which generates a *lot* of pairs. Not
+every computer can process all of those points, so sometimes you want to generate
+a smaller number. The "wand length" here is 1 grid square (=24.33 mm).
+```{r}
+pairs <- list(c(0,1), c(1,2), c(2,3), c(3,4),
+              c(5,6), c(6,7), c(7,8), c(8,9),
+              c(10,11), c(11,12), c(12,13), c(13,14),
+              c(15,16), c(16,17), c(17,18), c(18,19),
+              c(20,21), c(21,22), c(22,23), c(23,24),
+              c(0,5), c(5,10), c(10,15), c(15,20),
+              c(4,9), c(9,14), c(14,19), c(19,24))
+```
+
+This just gives the 4 pairs along the 4 edges of the grid. Then the "wand length" is
+4 grid squares (=97.32mm).
+```{r}
+pairs <- list(c(0,4), c(4,24), c(24,20), c(20,0))
+```
+
+Generate all the pairs.
+```{r}
+mall <- list()
+for (i in seq_along(pairs)) {
+  p1 <- pairs[[i]]
+  
+  a1 <- detections |> filter(id == p1[1]) |> 
+    rename(pt1_X = x, pt1_Y = y)
+  a2 <- detections |> filter(id == p1[2]) |> 
+    rename(pt2_X = x, pt2_Y = y)
+  
+  if (nrow(a1) > 0 & nrow(a2) > 0) {
+    mall[[i]] = left_join(a1, a2, by = c('frame', 'camera')) |> 
+      unite(id, c('id.x', 'id.y'))
+  }
+}
+
+m <- bind_rows(mall)
+```
+
+Take a look at the beginning of the data frame, just to check.
+```{r}
+head(m)
+```
+
+Finish the reorganization.
+```{r}
+ptsforeasywand <-
+  m |> 
+  expand(camera, frame) |> 
+  left_join(m, by = c('camera', 'frame')) |> 
+  na.omit() |> 
+  filter(!str_detect(id, 'NA')) |> 
+  mutate(camera = camera+1) |> 
+  pivot_wider(names_from = camera, values_from = starts_with('pt')) |> 
+  rename_with(~str_replace(.x, '(pt\\d)_([X|Y])_(\\d)', '\\1_cam\\3_\\2')) |>
+  select(pt1_cam1_X, pt1_cam1_Y,
+         pt1_cam2_X, pt1_cam2_Y,
+         pt2_cam1_X, pt2_cam1_Y,
+         pt2_cam2_X, pt2_cam2_Y) |> 
+  na.omit()
+
+head(ptsforeasywand)
+```
+
+And save out the CSV.
+```{r}
+write_csv(ptsforeasywand, '/Volumes/Data/Field video/Raw data/White shoes/synced/ptsforeasywand.csv')
+```
+
+Final step: Load the CSV into EasyWand, punch in the correct fake "wand length",
+add the camera parameters (resolution and focal length in pixels; check the SOPs
+for 3D calibrations for these details for our cameras), and run the calibration.
