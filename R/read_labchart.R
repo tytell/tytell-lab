@@ -2,7 +2,7 @@ require(readr)
 require(lubridate)
 
 # (latest version on Github at https://github.com/tytell/tytell-lab.git)
-# This file from commit $Id$, $Format:%ci$ ($Format:%h$)
+# This file from commit $Id$
 
 #' Parse a text file exported from ADI LabChart
 #' 

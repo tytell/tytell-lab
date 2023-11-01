@@ -11,7 +11,7 @@ library("here")
 ```
 
 (latest version on Github at https://github.com/tytell/tytell-lab.git)
-This file from commit $Id$, $Format:%ci$ ($Format:%h$)
+This file from commit $Id$.
 
 First step: Run `detect_charuco.ipynb` to detect the points in the videos of
 the CHaRuCO boards.
