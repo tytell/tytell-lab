@@ -1,0 +1,3 @@
+*.ipynb ident export-subst
+*.Rmd ident export-subst
+*.R ident export-subst
