@@ -1,5 +1,7 @@
-require(readr)
+require(data.table)
+require(stringr)
 require(lubridate)
+require(dplyr)
 
 # (latest version on Github at https://github.com/tytell/tytell-lab.git)
 # This file from commit $Id$
@@ -26,31 +28,39 @@ require(lubridate)
 #' @param include_units Include the units in the column names (default = TRUE)
 #' 
 #' *Note*: Probably will not correctly handle files where channels or blocks have different sampling rates.
-read_labchart <- function(filename, include_units = TRUE)
+read_labchart <- function(filename, 
+                          include_units = TRUE,
+                          .progress = TRUE)
 {
   fio <- file(description = filename,
               open = "rb",
               blocking = TRUE)
   on.exit(close(fio), add = TRUE)
   
-  # we hard coded 9 lines for the header, but it's possible ADI may change this at some point in the
-  # future.
-  # TODO: detect the header size automatically
-  headlines <- readLines(fio, n = 9)
+  filesize <- file.size(filename)
+  readsize <- 0
   
-  header <- str_match(headlines, "(\\w+)=\\s*(.+)") |> 
-    as_data_frame() |> 
-    rename(match = 1,
-           name = 2,
-           value = 3) |> 
-    select(-match) |> 
-    mutate(value = purrr::map_vec(value, ~str_split(.x, '\\t'))) |> 
-    column_to_rownames("name")
+  done <- FALSE
+  header <- list()
+  while (!done) {
+    ln <- readLines(fio, n = 1)
+    readsize <- readsize + length(ln) + 1
+    
+    hd1 <- parse_header_line(ln)
+    done <- is.null(hd1)
+    
+    if (!done) {
+      header[[length(header)+1]] <- hd1
+    }
+  }
+  
+  header <- dplyr::bind_rows(header) |>   
+    tibble::column_to_rownames("name")
   
   col_names <- header["ChannelTitle", "value"][[1]]
-  col_units <- header["UnitName", "value"][[1]]
   
-  if (include_units) {
+  if (include_units & "UnitName" %in% row.names(header)) {
+    col_units <- header["UnitName", "value"][[1]]
     col_names <- purrr::map2(col_names, col_units,
                             ~ case_when(
                               .y == "*"  ~  .x,
@@ -60,69 +70,143 @@ read_labchart <- function(filename, include_units = TRUE)
   col_names <- col_names |>
     str_replace("\\s+", "_")
   
-  col_names <- c("t.sec", col_names)
-  
   dt <- header["Interval", "value"][[1]] |> 
-                 str_extract("[+-]*[\\d.]+") |> 
+                 stringr::str_extract("[+-]*[\\d.]+") |> 
                  as.numeric()
   
   start_time <- header["ExcelDateTime", "value"][[1]][[2]] |> 
     lubridate::parse_date_time(orders = "m/d/Y H:M:S", tz = Sys.timezone())
   
-  # TODO: make vroom not display information
-  data <- vroom::vroom(fio, col_names = col_names)
+  data <- strsplit(ln, "\t", fixed = TRUE)
+  data <- data[[1]]
   
-  probs <- problems(data)
+  if (length(data) == length(col_names) + 1) {
+    nstartcol <- 1
+    col_names <- c("t.sec", col_names)
+  } else if (length(data) == length(col_names) + 2) {
+    nstartcol <- 2
+    col_names <- c("t.sec", "Date", col_names)
+  } else {
+    stop(stringr::str_glue("Unrecognized number of columns (expected {length(col_names)+1} or {length(col_names)+2}, but found {length(data)})"))
+  }
+  numcols <- length(col_names)
   
-  # comment lines
-  # TODO: I'm not sure whether these are for comments that span all channels
-  # or just for single channel comments. Should be tested
-  comments <- probs |> 
-    filter(str_detect(actual, '#')) |> 
-    mutate(v = str_split(actual, "\\t#"),
-           last_val = purrr::map_vec(v, ~ as.numeric(.x[[1]])),
-           comment = purrr::map_vec(v, ~ .x[[2]]))
-  
-  data[comments$row, ncol(data)] <- comments$last_val
-  data[comments$row, "Comment"] <- comments$comment
+  data <- parse_data_line(data, nstartcol, col_names)
 
+  blocknum <- 1
+  
   data[1, "Start_Time"] <- start_time
-  
-  block_times <- probs |> 
-    filter(lag(actual,2) == "ExcelDateTime=") |> 
-    mutate(Time = parse_date_time(actual, orders = "m/d/Y H:M:S", tz = Sys.timezone()))
+  data[1, "Block_Number"] <- blocknum
+  data[1, "Comment"] <- NA_character_
 
-  # TODO: If the sampling rate changes between blocks, we won't detect that change. That
-  # might cause a problem
+  if (is.logical(.progress) && .progress) {
+    cli::cli_progress_bar(stringr::str_glue("Reading LabChart file {filename}"),
+                          total = filesize)
+  } else if (is.character(.progress)) {
+    cli::cli_progress_bar(.progress, total = filesize)
+    .progress <- TRUE    
+  } else if (is.list(.progress)) {
+    do.call(cli::cli_progress_bar, c(.progress, total=filesize))
+    .progress <- TRUE    
+  }
+  
+  header <- list()
+  isblockheader <- FALSE
 
-  # the problems matrix is designed to be read by people, not parsed, which
-  # makes it annoying here. It lists rows multiple times if it finds problems
-  # on them, so we need to look for blocks of sequential rows with problems, which
-  # are the block markers
-  block_start <- probs |>
-    # this builds us "groups" of rows that are repeating or sequential
-    mutate(group = row - lag(row) <= 1,
-           group = as.numeric(is.na(group) | !group), 
-           group = cumsum(group)) |> 
-    group_by(group) |> 
-    # get rid of a block of rows that are about comments
-    filter(!any(str_detect(actual, '#'))) |> 
-    # and the beginning of the block is the max row number in the group
-    summarize(block_start = max(row)+1) |> 
-    pull(block_start)
-  
-  data[block_start, "Start_Time"] <- block_times$Time
-  data[1, "Block_Number"] <- 1
-  data[block_start, "Block_Number"] <- seq(2,nrow(block_times)+1)
-  
-  remove_rows <- probs |> 
-    filter(!str_detect(actual, '#')) |> 
-    pull(row)
+  i <- 2
+  while (TRUE) {
+    ln <- readLines(fio, n = 1)
+    if (.progress) {
+      cli::cli_progress_update(inc = nchar(ln)+1)
+    }
     
-  keep_rows <- setdiff(seq(1, nrow(data)), remove_rows)
-  
-  data <- data[keep_rows, ] |> 
-    fill(Block_Number, Start_Time, .direction = "down")
+    if (is.null(ln) || (length(ln) == 0)) {
+      break
+    }
+    
+    r <- strsplit(ln, "\t", fixed = TRUE) 
+    r <- r[[1]]
+    
+    if ((length(r) > 0) && check_numeric(r[1])) {
+      hd1 <- parse_header_line(ln)
+      
+      if (is.null(hd1)) {
+        stop(stringr::str_glue("Could not parse line {i}: {ln}"))
+      } else {
+        header[[length(header)+1]] <- hd1 
+        isblockheader <- TRUE
+      }
+      next
+    } else if (length(r) < numcols) {
+      stop(stringr::str_glue("Error on line {i}: Expected {numcols} columns, found {length(r)}"))
+    }
+    
+    data1 <- parse_data_line(r[1:numcols], nstartcol, col_names)
+    data[i, 1:numcols] <- data1
+    
+    if ((length(r) == numcols + 1) && stringr::str_starts(r[numcols+1], '#')) {
+      data[i, "Comment"] <- r[numcols+1]
+    } 
+    
+    if (isblockheader) {
+      # we just got the first row of a new block
+      blocknum <- blocknum + 1
+      
+      header <- dplyr::bind_rows(header) |>   
+        tibble::column_to_rownames("name")
+      
+      data[i, "Block_Number"] <- blocknum
+      data[i, "Start_Time"] <- header["ExcelDateTime", "value"][[1]][[2]] |> 
+        lubridate::parse_date_time(orders = "m/d/Y H:M:S", tz = Sys.timezone())
+      
+      isblockheader <- FALSE
+      header <- list()
+    }
 
+    i <- i + 1
+  }
+  cli::cli_progress_done()
+  
+  data <- tidyr::fill(data, Block_Number, Start_Time, .direction = "down")
+  
   data
+}
+
+check_numeric <- function(x)
+{
+  suppressWarnings(is.na(as.numeric(x)))
+}
+
+parse_data_line <- function(r, nstartcol, col_names)
+{
+  r <- as.list(r)
+  
+  r[[1]] <- as.numeric(r[[1]])
+  if (nstartcol == 2) {
+    r[[2]] <- lubridate::parse_date_time(r[[2]], orders = "m/d/Y", tz = Sys.timezone())
+  }
+  r[(nstartcol+1):length(r)] <- lapply(r[(nstartcol+1):length(r)], 
+                                       \(x) suppressWarnings(as.numeric(x)))
+  
+  r <- tibble::as_tibble(r, .name_repair = "minimal")
+  colnames(r) <- col_names
+  
+  r
+}
+
+parse_header_line <- function(ln)
+{
+  hd1 <- stringr::str_match(ln, "(\\w+)=\\s*(.+)")
+  if (is.na(hd1[[1]])) {
+    header1 <- NULL
+  } else {
+    header1 <- hd1 |> 
+      tibble::as_tibble(.name_repair = "minimal") |> 
+      dplyr::rename(match = 1,
+             name = 2,
+             value = 3) |> 
+      dplyr::select(-match) |> 
+      dplyr::mutate(value = str_split(value, '\\t'))
+  }
+  header1  
 }
