@@ -1,0 +1,11 @@
+Package: tytell-lab
+Title: Shared Code For the Tytell Lab at Tufts University
+Version: 0.0.0.1000
+Authors@R: 
+    person("Eric", "Tytell", , "eric.tytell@tufts.edu", role = c("aut", "cre"),
+           comment = c(ORCID = "0000-0002-6603-9448"))
+Description: Assorted shared code for the Tytell lab at Tufts University
+License: CC BY 4.0
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.2.3
