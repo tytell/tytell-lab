@@ -51,3 +51,6 @@ docs
 charuco-to-easywand/Raw data
 man
 NAMESPACE
+Raw data
+*.csv
+*.toml
