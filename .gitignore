@@ -54,3 +54,4 @@ NAMESPACE
 Raw data
 *.csv
 *.toml
+.vscode
