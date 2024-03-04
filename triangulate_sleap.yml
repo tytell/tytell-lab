@@ -1,0 +1,29 @@
+# Charuco board parameters
+nsquaresx: 6
+nsquaresy: 6
+square_length: 24.33
+marker_length: 17
+marker_bits: 5
+dict_size: 50
+
+# Calibration setup
+calibration_videos:
+  - Raw data/9.5.22Calib-short-camA.mp4
+  - Raw data/9.5.22Calib-short-camB.mp4
+  - Raw data/9.5.22Calib-short-camC.mp4    
+
+camera_names:
+  - camA
+  - camB
+  - camC
+
+debug: True
+
+calibration_file: calibration.toml
+
+# Sleap data files
+sleap_files:
+  - Raw data/SeparateCameras/CamA/BigSLEAPturningTraining-camA.slp
+  - Raw data/SeparateCameras/CamB&C/BigSLEAPturningTraining-camB&C.slp
+  - Raw data/SeparateCameras/CamB&C/BigSLEAPturningTraining-camB&C.slp
+  
