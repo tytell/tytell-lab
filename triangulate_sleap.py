@@ -14,6 +14,7 @@ import pandas as pd
 import re
 import fnmatch
 
+from copy import copy, deepcopy
 from warnings import warn
 
 from contextlib import contextmanager
@@ -64,7 +65,35 @@ def calibrate_charuco(board, videonames, camnames, outfile):
 
     return camgroup, boardpts
 
-def reproject_points(camgroup, pts):
+def refine_calibration(camgroup, pts, max_err, nodes='all'):
+    npt = pts.shape[0]
+    good = ~pts.loc[:,(slice(None), ['x', 'y'])].isna().any(axis=1)
+    pts = pts.loc[good, :]
+    print(f'{pts.shape[0]}/{npt} points visible in all cameras')
+
+    if nodes != 'all':
+        pts = pts.loc[(slice(None), slice(None), nodes), :]
+        print('{}/{} ({:2.0f}%) points in selected nodes'.format(pts.shape[0], npt, np.round(pts.shape[0]/npt*100)))
+
+    good = pts.loc[:, (slice(None), 'err')].max(axis=1, skipna=False) < max_err
+
+    pts = pts.loc[good, (camgroup.get_names(), ['x', 'y'])]
+    print('{}/{} ({:2.0f}%) points below maximum error'.format(pts.shape[0], npt, np.round(pts.shape[0]/npt*100)))
+
+    calibpts = pts.to_numpy(dtype=float)
+    calibpts = np.reshape(calibpts, [-1, 3, 2]).transpose((1, 0, 2))
+
+    camgroup1 = deepcopy(camgroup)
+    camgroup1.bundle_adjust_iter(calibpts, extra=None,
+                            n_iters=6, start_mu=15, end_mu=1,
+                            max_nfev=200, ftol=1e-4,
+                            n_samp_iter=200, n_samp_full=1000,
+                            error_threshold=0.3, only_extrinsics=False,
+                            verbose=True)    
+
+    return camgroup1
+
+def triangulate_points(camgroup, pts):
     # get rid of any columns that might have come from a previous reprojection
     pts = pts.loc[:, (camgroup.get_names(), ['x','y'])]
 
@@ -93,6 +122,20 @@ def reproject_points(camgroup, pts):
                           columns=col_idx)
 
     pts = pd.concat((pts, reproj), axis=1)
+
+    errs = []
+    for cam in camgroup.get_names():
+        xy = pts.loc[:,(cam,['x','y'])].to_numpy(dtype=float)
+        XYr = pts.loc[:,(cam,['Xr','Yr'])].to_numpy(dtype=float)
+
+        errs.append(
+            pd.DataFrame(np.linalg.norm(XYr - xy, axis=1), index=pts.index,
+                    columns=pd.MultiIndex.from_product([[cam], ['err']],
+                                                names=['camera','var']))
+        )
+
+    errs = pd.concat(errs, axis=1)
+    pts = pd.concat((pts, errs), axis=1)
 
     return pts
 
