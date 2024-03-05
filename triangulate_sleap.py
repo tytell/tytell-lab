@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from sleap.io.dataset import Labels
 import pandas as pd
 import re
+import fnmatch
 
 from warnings import warn
 
@@ -95,10 +96,16 @@ def reproject_points(camgroup, pts):
 
     return pts
 
-def plot_reprojected_points(pts, i, videonames=None, videopath=None):
+def plot_reprojected_points(pts, i, videonames=None, videopath=None, zoom=True):
     fr = pts.iloc[i:i+1].index.get_level_values('frame')[0]
+    try:
+        vid = pts.iloc[i:i+1].index.get_level_values('video')[0]
+        q = f'frame == {fr} and video == "{vid}"'
+    except KeyError:
+        q = f'frame == {fr}'
 
-    pts1 = pts.query(f'frame == {fr}')
+    print(q)
+    pts1 = pts.query(q)
 
     camnames = list(pts1.columns.get_level_values('camera').unique())
     camnames = [cn1 for cn1 in camnames if cn1 != '3D']
@@ -124,25 +131,112 @@ def plot_reprojected_points(pts, i, videonames=None, videopath=None):
 
             ax1.imshow(frame1)
 
-            x1 = pts1[(cam1, 'x')]
-            y1 = pts1[(cam1, 'y')]
-            xr1 = pts1[(cam1, 'Xr')]
-            yr1 = pts1[(cam1, 'Yr')]
+            x1 = pts1[(cam1, 'x')].array
+            y1 = pts1[(cam1, 'y')].array
+            xr1 = pts1[(cam1, 'Xr')].array
+            yr1 = pts1[(cam1, 'Yr')].array
 
             ax1.plot(x1,y1, 'ro')
             ax1.plot(xr1,yr1, 'y+')
+            ax1.plot(np.vstack((x1, xr1)), 
+                     np.vstack((y1, yr1)), 'y-')
 
             xx = pts1.loc[(slice(None)), (cam1, ['x','Xr'])].stack()
             yy = pts1.loc[(slice(None)), (cam1, ['y','Yr'])].stack()
 
-            ax1.set_xlim(pd.concat([xx.min(), xx.max()]).to_numpy() + np.array([-50, 50]))
-            ax1.set_ylim(pd.concat([yy.min(), yy.max()]).to_numpy() + np.array([-50, 50]))        
+            if zoom:
+                ax1.set_xlim(pd.concat([xx.min(), xx.max()]).to_numpy() + np.array([-50, 50]))
+                ax1.set_ylim(pd.concat([yy.min(), yy.max()]).to_numpy() + np.array([-50, 50]))        
+            ax1.invert_yaxis()
+            ax1.axis('off')
     finally:
         for c1 in cap:
             c1.release()
     
     return fig
 
+def separate_video_and_camera(vidname, camnames):
+    fn1 = re.sub(r'\\', '/', vidname)
+    fn1 = os.path.basename(fn1)
+
+    for cam1 in camnames:
+        fn1, nsub = re.subn(cam1, 'CAMERA', fn1)
+        if nsub == 1:
+            matched_camera = cam1
+            break
+    else:
+        matched_camera = None
+
+    return fn1, matched_camera
+
+def load_sleap_points(sleapfiles, calibfile, match_video=None):
+    camgroup = aniposelib.cameras.CameraGroup.load(calibfile)
+    camnames = camgroup.get_names()
+
+    labels = [Labels.load_file(fn) for fn in sleapfiles]
+
+    node_count = len(labels[0].skeletons[0].nodes)
+    node_names = [node.name for node in labels[0].skeletons[0].nodes]
+
+    ptsall = []
+    for l1, cam1 in zip(labels, camnames):
+        pts = []
+        videos_done = []
+        for v1 in l1.videos:
+            v1name = v1.backend.filename
+            if v1name in videos_done:
+                warn(f'Video {v1name} in Sleap file multiple times')
+                continue
+            
+            if match_video is not None and not fnmatch.fnmatch(v1name, match_video):
+                continue
+            
+            videos_done.append(v1name)
+
+            vidname1, camname1 = separate_video_and_camera(v1name, camnames)
+            if camname1 != cam1:
+                continue
+            
+            frames = l1.get(v1)
+            frame_idx = [lf.frame_idx for lf in frames]
+
+            col_ind = pd.MultiIndex.from_product([[camname1], ['x', 'y']],
+                                                names = ['camera', 'var'])
+            row_ind = pd.MultiIndex.from_product([[vidname1], frame_idx, node_names], 
+                                                names = ['video', 'frame', 'node'])
+
+            pts1 = pd.DataFrame(index = row_ind, columns=col_ind)
+
+            for lf in frames:
+                if len(lf.user_instances) == 1:
+                    inst = lf.user_instances[0]
+                elif len(lf.predicted_instances) == 1:
+                    inst = lf.predicted_instances[0]
+                else:
+                    print("Error!")
+                    assert(False)
+                
+                pts1.loc[(vidname1, lf.frame_idx, slice(None)), (camname1, slice(None))] = inst.numpy()
+
+            pts.append(pts1)
+        
+        pts = pd.concat(pts, axis=0)
+        if pts.index.has_duplicates:
+            warn('Dropping duplicate videos')
+
+            # this annoyingly complicated expression keeps all unduplicated elements and the first duplicated one
+            not_duplicated = ~(ptsall[2].index.duplicated(keep=False) & ptsall[2].index.duplicated(keep='last'))
+            pts = pts.loc[not_duplicated]
+
+        ptsall.append(pts)
+
+    ptsall = pd.concat(ptsall, axis=1, join='inner')
+
+    print('Found {} frames across {} matched videos'.format(len(ptsall.index.get_level_values('frame')), 
+                                                            len(ptsall.index.get_level_values('video').unique())))    
+
+
+    return camgroup, ptsall
 
 def main():
     matplotlib.use('Agg')
