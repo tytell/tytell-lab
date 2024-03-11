@@ -65,7 +65,7 @@ def calibrate_charuco(board, videonames, camnames, outfile):
 
     return camgroup, boardpts
 
-def refine_calibration(camgroup, pts, max_err, nodes='all'):
+def refine_calibration(camgroup, pts, max_err, nodes='all', outfile=None):
     npt = pts.shape[0]
     good = ~pts.loc[:,(slice(None), ['x', 'y'])].isna().any(axis=1)
     pts = pts.loc[good, :]
@@ -90,6 +90,9 @@ def refine_calibration(camgroup, pts, max_err, nodes='all'):
                             n_samp_iter=200, n_samp_full=1000,
                             error_threshold=0.3, only_extrinsics=False,
                             verbose=True)    
+
+    if outfile is not None:
+        camgroup1.dump(outfile)
 
     return camgroup1
 
