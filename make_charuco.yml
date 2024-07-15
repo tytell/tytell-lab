@@ -1,0 +1,10 @@
+# Charuco board parameters
+nsquaresx: 8
+nsquaresy: 8
+square_length: 20
+marker_length: 15
+marker_bits: 6
+dict_size: 50
+
+image_size: 1000
+margin_pixels: 50
