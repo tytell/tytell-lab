@@ -32,6 +32,8 @@ def calibrate_charuco(board, videonames, camnames, outfile):
     err, points = camgroup.calibrate_videos(videonames, board)
     camgroup.dump(outfile)
 
+    print(points)
+
     if (err > 4):
         warn(f'Large error ({err})!')
     
@@ -414,7 +416,7 @@ def main():
 
     parser.add_argument('config', nargs="+")
 
-    parser.add_argument('--base_path',
+    parser.add_argument('--base_path', default='.',
                         help='Base path for data files')
 
     parser.add_argument('-nx', '--nsquaresx', type=int, 
@@ -445,7 +447,7 @@ def main():
     parser.add_argument('--camera_names', action='extend', nargs='+',
                         help="Names for eaech of the cameras, in the same order as the videos")
 
-    parser.add_argument('--force_calibration', type=bool, default=False,
+    parser.add_argument('--force_calibration', default=False, action="store_true",
                         help="Run the calibration even if the calibration TOML file is present")
 
     parser.add_argument('--debug', type=bool, default=False,
@@ -495,6 +497,22 @@ def main():
         err, rows = camgroup.calibrate_videos(vidnames, board, 
                                 init_intrinsics=True, init_extrinsics=True, 
                                 verbose=args.verbose > 0)
+        
+        if args.verbose == 2:
+            import json
+            from copy import deepcopy
+
+            rows_out = deepcopy(rows)
+
+            for rows_cam in rows_out:
+                for rows1 in rows_cam:
+                    for k, v in rows1.items():
+                        if isinstance(v, np.ndarray):
+                            rows1[k] = rows1[k].tolist()
+
+            with open('rows-output.json', 'w') as f:
+                json.dump(rows_out, f)
+                    
         camgroup.dump(args.calibration_file)
 
         if args.debug:
