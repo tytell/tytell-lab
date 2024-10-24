@@ -409,6 +409,40 @@ def load_sleap_points(sleapfiles, calibfile, match_video=None):
 
     return camgroup, ptsall
 
+# Function to separate the name of a video and the camera names, so that we can match up videos for different cameras
+def get_trial_and_camname(vidname, camnames, vid_tab):
+    if vid_tab is None:
+        fn1 = re.sub(r'\\', '/', vidname)
+        fn1 = os.path.basename(fn1)
+
+        for cam1 in camnames:
+            fn1, nsub = re.subn(cam1, 'CAMERA', fn1)
+            if nsub == 1:
+                matched_camera = cam1
+                break
+        else:
+            matched_camera = None
+
+        return fn1, matched_camera
+    else:
+        trials = vid_tab.iloc[:,0]
+        names = vid_tab.drop(columns=vid_tab.columns[0])
+
+        matched_camera = None
+        for cam1, allcamnames1 in names.items():
+            for idx, n1 in allcamnames1.items():
+                if n1 in vidname:
+                    tr1 = trials[idx]
+                    matched_camera = cam1
+                    break
+
+            if matched_camera is not None:
+                break
+        
+        return tr1, matched_camera
+
+
+
 def main():
     matplotlib.use('Agg')
 
@@ -462,6 +496,9 @@ def main():
 
     parser.add_argument('-s', '--sleap_files', action='extend', nargs='+',
                         help="SLP files containing points detected using Sleap.ai")
+    parser.add_argument('--video_table', default=None,
+                        help="CSV file containing a table of matching video files")
+    
     parser.add_argument('-o', '--output_file', 
                         help="Name of the output CSV file with the triangulated points")
 
@@ -475,9 +512,12 @@ def main():
         
         args = parser.parse_args()
 
-    if args.force_calibration or not os.path.exists(args.calibration_file):
+    ## Run the calibration if necessary
+    calib_file = os.path.join(args.base_path, args.calibration_file)
+
+    if args.force_calibration or not os.path.exists(calib_file):
         if args.verbose > 0:
-            if not os.path.exists(args.calibration_file):
+            if not os.path.exists(calib_file):
                 print(f"No calibration file found. Running calibration")
             else:
                 print("force_calibration is True. Running calibration")
@@ -499,6 +539,7 @@ def main():
                                 verbose=args.verbose > 0)
         
         if args.verbose == 2:
+            # save the detected points
             import json
             from copy import deepcopy
 
@@ -513,9 +554,10 @@ def main():
             with open('rows-output.json', 'w') as f:
                 json.dump(rows_out, f)
                     
-        camgroup.dump(args.calibration_file)
+        camgroup.dump(calib_file)
 
         if args.debug:
+            # generate images showing the detected points
             for vid, rows1 in zip(args.calibration_videos, rows):
                 vid = os.path.join(args.base_path, vid)
 
@@ -539,8 +581,6 @@ def main():
                         plt.savefig(outname1)
                         plt.close(fig)
     else:
-        calib_file = os.path.join(args.base_path, args.calibration_file)
-
         if args.verbose > 0:
             print(f"Loading calibration from {calib_file}")
 
@@ -565,30 +605,33 @@ def main():
     videos = [[v1.backend.filename for v1 in l1.videos if re.search(c1, v1.backend.filename) is not None] \
             for l1, c1 in zip(labels, args.camera_names)]
 
-    # Function to separate the name of a video and the camera names, so that we can match up videos for different cameras
-    def separate_video_and_camera(vidname, camnames):
-        fn1 = re.sub(r'\\', '/', vidname)
-        fn1 = os.path.basename(fn1)
+    if args.verbose >= 2:
+        print("All videos:\n")
+        print(videos)
 
-        for cam1 in camnames:
-            fn1, nsub = re.subn(cam1, 'CAMERA', fn1)
-            if nsub == 1:
-                matched_camera = cam1
-                break
+    ## Match videos from the same trial and different cameras
+    vid_tab = None
+    if args.video_table is not None:
+        vid_tab_file = os.path.join(args.base_path, args.video_table)
+
+        if not os.path.exists(vid_tab_file):
+            if args.verbose > 0:
+                print(f"Video table file {vid_tab_file} not found. Attempting to match videos by name")
         else:
-            matched_camera = None
-
-        return fn1, matched_camera
+            vid_tab = pd.read_csv(vid_tab_file)
 
     # pull out the x and y coordinates from the Sleap data files and match the same point in the same frame across cameras
     if args.verbose > 0:
         print("Extracting points...")
 
+    col_ind = pd.MultiIndex.from_product([[args.camera_names], ['x', 'y']],
+                                        names = ['camera', 'point'])
+    
     ptsall = []
     for l1, cam1 in zip(labels, args.camera_names):
         pts = []
         for v1 in l1.videos:
-            vidname1, camname1 = separate_video_and_camera(v1.backend.filename, args.camera_names)
+            trial1, camname1 = get_trial_and_camname(v1.backend.filename, args.camera_names, vid_tab)
             if camname1 != cam1:
                 continue
             
@@ -597,7 +640,7 @@ def main():
 
             col_ind = pd.MultiIndex.from_product([[camname1], ['x', 'y']],
                                                 names = ['camera', 'point'])
-            row_ind = pd.MultiIndex.from_product([[vidname1], frame_idx, node_names], 
+            row_ind = pd.MultiIndex.from_product([[trial1], frame_idx, node_names], 
                                                 names = ['video', 'frame', 'node'])
 
             pts1 = pd.DataFrame(index = row_ind, columns=col_ind)
@@ -610,7 +653,7 @@ def main():
                 else:
                     assert False, "No instances or multiple instances in frame"
                 
-                pts1.loc[(vidname1, lf.frame_idx, slice(None)), (camname1, slice(None))] = inst.numpy()
+                pts1.loc[(trial1, lf.frame_idx, slice(None)), (camname1, slice(None))] = inst.numpy()
 
             pts.append(pts1)
         
