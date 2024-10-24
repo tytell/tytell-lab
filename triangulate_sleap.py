@@ -428,6 +428,8 @@ def get_trial_and_camname(vidname, camnames, vid_tab):
         trials = vid_tab.iloc[:,0]
         names = vid_tab.drop(columns=vid_tab.columns[0])
 
+        tr1 = vidname
+
         matched_camera = None
         for cam1, allcamnames1 in names.items():
             for idx, n1 in allcamnames1.items():
@@ -623,11 +625,9 @@ def main():
     # pull out the x and y coordinates from the Sleap data files and match the same point in the same frame across cameras
     if args.verbose > 0:
         print("Extracting points...")
-
-    col_ind = pd.MultiIndex.from_product([[args.camera_names], ['x', 'y']],
-                                        names = ['camera', 'point'])
     
     ptsall = []
+    already_processed = []
     for l1, cam1 in zip(labels, args.camera_names):
         pts = []
         for v1 in l1.videos:
@@ -635,6 +635,15 @@ def main():
             if camname1 != cam1:
                 continue
             
+            if v1.backend.filename in already_processed:
+                print(f"File {v1.backend.filename} seems to be repeated. Skipping...")
+                continue
+            else:
+                already_processed.append(v1.backend.filename)
+
+            if args.verbose > 0:
+                print(f"Camera {camname1}, Trial {trial1}")
+
             frames = l1.get(v1)
             frame_idx = [lf.frame_idx for lf in frames]
 
@@ -657,7 +666,15 @@ def main():
 
             pts.append(pts1)
         
-        ptsall.append(pd.concat(pts, axis=0))
+        pts = pd.concat(pts, axis=0)
+        duplicates = pts.index.duplicated(keep=False)
+        if any(duplicates):
+            keep = ~pts.index.duplicated(keep='first')
+            if args.verbose > 0:
+                print(f"Camera {cam1}: {sum(duplicates)} duplicated frames. Keeping {sum(keep)} ({sum(keep)/len(keep)*100:.0f}%)")
+            pts = pts[keep]
+
+        ptsall.append(pts)
 
     ptsall = pd.concat(ptsall, axis=1)
 
